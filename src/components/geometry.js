@@ -45,6 +45,14 @@ module.exports.Component = registerComponent('geometry', {
     } else {
       mesh = new THREE.Mesh();
       mesh.geometry = this.geometry;
+      // Default material if not defined on the entity.
+      if (!this.el.getAttribute('material')) {
+        mesh.material = new THREE.MeshStandardMaterial({
+          color: Math.random() * 0xFFFFFF,
+          metalness: 0,
+          roughness: 0.5
+        });
+      }
       el.setObject3D('mesh', mesh);
     }
   },

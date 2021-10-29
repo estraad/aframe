@@ -11,7 +11,6 @@ var utils = require('../../utils/');
 var AEntity = require('../a-entity');
 var ANode = require('../a-node');
 var initPostMessageAPI = require('./postMessage');
-var shaders = require('../shader').shaders;
 
 var bind = utils.bind;
 var isIOS = utils.device.isIOS();
@@ -19,6 +18,8 @@ var isMobile = utils.device.isMobile();
 var isWebXRAvailable = utils.device.isWebXRAvailable;
 var registerElement = re.registerElement;
 var warn = utils.debug('core:a-scene:warn');
+
+if (isIOS) { require('../../utils/ios-orientationchange-blank-bug'); }
 
 /**
  * Scene element, holds all entities.
@@ -51,6 +52,7 @@ module.exports.AScene = registerElement('a-scene', {
           // THREE may swap the camera used for the rendering if in VR, so we pass it to tock
           if (self.isPlaying) { self.tock(self.time, self.delta, camera); }
         };
+        this.resize = bind(this.resize, this);
         this.render = bind(this.render, this);
         this.systems = {};
         this.systemNames = [];
@@ -60,6 +62,13 @@ module.exports.AScene = registerElement('a-scene', {
         this.hasLoaded = false;
         this.isPlaying = false;
         this.originalHTML = this.innerHTML;
+
+        // Default components.
+        this.setAttribute('inspector', '');
+        this.setAttribute('keyboard-shortcuts', '');
+        this.setAttribute('screenshot', '');
+        this.setAttribute('vr-mode-ui', '');
+        this.setAttribute('device-orientation-permission-ui', '');
       }
     },
 
@@ -82,6 +91,7 @@ module.exports.AScene = registerElement('a-scene', {
         // Renderer initialization
         setupCanvas(this);
         this.setupRenderer();
+        loadingScreen.setup(this, getCanvasSize);
 
         this.resize();
         if (!embedded) { this.addFullScreenStyles(); }
@@ -118,12 +128,18 @@ module.exports.AScene = registerElement('a-scene', {
                                   this.pointerUnrestrictedBound);
         }
 
+        window.addEventListener('sessionend', this.resize);
         // Camera set up by camera system.
         this.addEventListener('cameraready', function () {
           self.attachedCallbackPostCamera();
         });
 
         this.initSystems();
+
+        // WebXR Immersive navigation handler.
+        if (this.hasWebXR && navigator.xr && navigator.xr.addEventListener) {
+          navigator.xr.addEventListener('sessiongranted', function () { self.enterVR(); });
+        }
       }
     },
 
@@ -132,7 +148,6 @@ module.exports.AScene = registerElement('a-scene', {
         var resize;
         var self = this;
 
-        resize = bind(this.resize, this);
         window.addEventListener('load', resize);
         window.addEventListener('resize', function () {
           // Workaround for a Webkit bug (https://bugs.webkit.org/show_bug.cgi?id=170595)
@@ -141,9 +156,9 @@ module.exports.AScene = registerElement('a-scene', {
           // is postponed a few milliseconds.
           // self.resize can be called directly once the bug above is fixed.
           if (self.isIOS) {
-            setTimeout(resize, 100);
+            setTimeout(self.resize, 100);
           } else {
-            resize();
+            self.resize();
           }
         });
         this.play();
@@ -198,6 +213,8 @@ module.exports.AScene = registerElement('a-scene', {
         window.removeEventListener('vrdisplaydisconnect', this.exitVRTrueBound);
         window.removeEventListener('vrdisplaypointerrestricted', this.pointerRestrictedBound);
         window.removeEventListener('vrdisplaypointerunrestricted', this.pointerUnrestrictedBound);
+        window.removeEventListener('sessionend', this.resize);
+        this.renderer.xr.dispose();
       }
     },
 
@@ -243,10 +260,16 @@ module.exports.AScene = registerElement('a-scene', {
 
     enterAR: {
       value: function () {
+        var errorMessage;
         if (!this.hasWebXR) {
-          throw new Error('Failed to enter AR mode, WebXR not supported.');
+          errorMessage = 'Failed to enter AR mode, WebXR not supported.';
+          throw new Error(errorMessage);
         }
-        this.enterVR(true);
+        if (!utils.device.checkARSupport()) {
+          errorMessage = 'Failed to enter AR, WebXR immersive-ar mode not supported in your browser or device.';
+          throw new Error(errorMessage);
+        }
+        return this.enterVR(true);
       }
     },
 
@@ -263,6 +286,7 @@ module.exports.AScene = registerElement('a-scene', {
         var self = this;
         var vrDisplay;
         var vrManager = self.renderer.xr;
+        var xrInit;
 
         // Don't enter VR if already in VR.
         if (this.is('vr-mode')) { return Promise.resolve('Already in VR.'); }
@@ -276,17 +300,25 @@ module.exports.AScene = registerElement('a-scene', {
             if (this.xrSession) {
               this.xrSession.removeEventListener('end', this.exitVRBound);
             }
-            navigator.xr.requestSession(useAR ? 'immersive-ar' : 'immersive-vr', {
-              requiredFeatures: ['local-floor'],
-              optionalFeatures: ['bounded-floor']
-            }).then(function requestSuccess (xrSession) {
-              self.xrSession = xrSession;
-              vrManager.setSession(xrSession);
-              xrSession.addEventListener('end', self.exitVRBound);
-              if (useAR) {
-                self.addState('ar-mode');
-              }
-              enterVRSuccess();
+            var refspace = this.sceneEl.systems.webxr.sessionReferenceSpaceType;
+            vrManager.setReferenceSpaceType(refspace);
+            var xrMode = useAR ? 'immersive-ar' : 'immersive-vr';
+            xrInit = this.sceneEl.systems.webxr.sessionConfiguration;
+            return new Promise(function (resolve, reject) {
+              navigator.xr.requestSession(xrMode, xrInit).then(
+                function requestSuccess (xrSession) {
+                  self.xrSession = xrSession;
+                  vrManager.layersEnabled = xrInit.requiredFeatures.indexOf('layers') !== -1;
+                  vrManager.setSession(xrSession);
+                  xrSession.addEventListener('end', self.exitVRBound);
+                  enterVRSuccess(resolve);
+                },
+                function requestFail (error) {
+                  var useAR = xrMode === 'immersive-ar';
+                  var mode = useAR ? 'AR' : 'VR';
+                  throw new Error('Failed to enter ' + mode + ' mode (`requestSession`) ' + error);
+                }
+              );
             });
           } else {
             vrDisplay = utils.device.getVRDisplay();
@@ -299,8 +331,7 @@ module.exports.AScene = registerElement('a-scene', {
             var rendererSystem = this.getAttribute('renderer');
             var presentationAttributes = {
               highRefreshRate: rendererSystem.highRefreshRate,
-              foveationLevel: rendererSystem.foveationLevel,
-              multiview: vrManager.multiview
+              foveationLevel: rendererSystem.foveationLevel
             };
 
             return vrDisplay.requestPresent([{
@@ -308,7 +339,6 @@ module.exports.AScene = registerElement('a-scene', {
               attributes: presentationAttributes
             }]).then(enterVRSuccess, enterVRFailure);
           }
-          return Promise.resolve();
         }
 
         // No VR.
@@ -316,7 +346,7 @@ module.exports.AScene = registerElement('a-scene', {
         return Promise.resolve();
 
         // Callback that happens on enter VR success or enter fullscreen (any API).
-        function enterVRSuccess () {
+        function enterVRSuccess (resolve) {
           // vrdisplaypresentchange fires only once when the first requestPresent is completed;
           // the first requestPresent could be called from ondisplayactivate and there is no way
           // to setup everything from there. Thus, we need to emulate another vrdisplaypresentchange
@@ -328,7 +358,11 @@ module.exports.AScene = registerElement('a-scene', {
             window.dispatchEvent(event);
           }
 
-          self.addState('vr-mode');
+          if (useAR) {
+            self.addState('ar-mode');
+          } else {
+            self.addState('vr-mode');
+          }
           self.emit('enter-vr', {target: self});
           // Lock to landscape orientation on mobile.
           if (!isWebXRAvailable && self.isMobile && screen.orientation && screen.orientation.lock) {
@@ -346,9 +380,11 @@ module.exports.AScene = registerElement('a-scene', {
 
           self.renderer.setAnimationLoop(self.render);
           self.resize();
+          if (resolve) { resolve(); }
         }
 
         function enterVRFailure (err) {
+          self.removeState('vr-mode');
           if (err && err.message) {
             throw new Error('Failed to enter VR mode (`requestPresent`): ' + err.message);
           } else {
@@ -371,7 +407,7 @@ module.exports.AScene = registerElement('a-scene', {
         var vrManager = this.renderer.xr;
 
         // Don't exit VR if not in VR.
-        if (!this.is('vr-mode')) { return Promise.resolve('Not in VR.'); }
+        if (!this.is('vr-mode') && !this.is('ar-mode')) { return Promise.resolve('Not in immersive mode.'); }
 
         // Handle exiting VR if not yet already and in a headset or polyfill.
         if (this.checkHeadsetConnected() || this.isMobile) {
@@ -407,6 +443,7 @@ module.exports.AScene = registerElement('a-scene', {
           }
           // Exiting VR in embedded mode, no longer need fullscreen styles.
           if (self.hasAttribute('embedded')) { self.removeFullScreenStyles(); }
+
           self.resize();
           if (self.isIOS) { utils.forceCanvasResizeSafariMobile(self.canvas); }
           self.renderer.setPixelRatio(window.devicePixelRatio);
@@ -547,11 +584,6 @@ module.exports.AScene = registerElement('a-scene', {
         var embedded;
         var isVRPresenting;
         var size;
-
-        if (this.hasAttribute('disable-resize')) {
-          return;
-        }
-
         var isPresenting = this.renderer.xr.isPresenting;
         isVRPresenting = this.renderer.xr.enabled && isPresenting;
 
@@ -579,6 +611,7 @@ module.exports.AScene = registerElement('a-scene', {
 
     setupRenderer: {
       value: function () {
+        var self = this;
         var renderer;
         var rendererAttr;
         var rendererAttrString;
@@ -589,18 +622,14 @@ module.exports.AScene = registerElement('a-scene', {
           antialias: !isMobile,
           canvas: this.canvas,
           logarithmicDepthBuffer: false,
-          preuploadVideos: /Oculus/.test(navigator.userAgent),
-          forceWebVR: false
+          powerPreference: 'high-performance'
         };
 
         this.maxCanvasSize = {height: 1920, width: 1920};
 
-        var enableMultiview = false;
         if (this.hasAttribute('renderer')) {
           rendererAttrString = this.getAttribute('renderer');
           rendererAttr = utils.styleParser.parse(rendererAttrString);
-
-          enableMultiview = rendererAttr.multiview === 'true';
 
           if (rendererAttr.precision) {
             rendererConfig.precision = rendererAttr.precision + 'p';
@@ -618,114 +647,6 @@ module.exports.AScene = registerElement('a-scene', {
             rendererConfig.alpha = rendererAttr.alpha === 'true';
           }
 
-          // HACK: We need force WebVR in Hubs with the window.forceWebVR flag for the time being, until Hubs implements WebXR support.
-          if (window.forceWebVR === true) {
-            rendererConfig.forceWebVR = window.forceWebVR;
-          }
-
-          if (rendererAttr.webgl2 && rendererAttr.webgl2 === 'true') {
-            const contextConfig = {
-              alpha: rendererConfig.alpha,
-              depth: true,
-              stencil: true,
-              antialias: rendererConfig.antialias,
-              premultipliedAlpha: true,
-              preserveDrawingBuffer: false,
-              powerPreference: 'default'
-            };
-
-            if (navigator.xr) {
-              contextConfig.xrCompatible = true;
-            }
-
-            const context = this.canvas.getContext('webgl2', contextConfig);
-
-            if (context) {
-              console.log('Using WebGL 2.0 context.');
-              rendererConfig.context = context;
-
-              const multiviewSupported = (!!context.getExtension('WEBGL_multiview') || !!context.getExtension('OVR_multiview'));
-              if (enableMultiview && !multiviewSupported) {
-                console.warn('Multiview enabled but WEBGL/OVR_multiview extension browser support not available');
-                enableMultiview = false;
-              }
-
-              var versionRegex = /^\s*#version\s+300\s+es\s*\n/;
-
-              for (var shaderName in shaders) {
-                var shader = shaders[shaderName];
-
-                var shaderProto = shader.Shader.prototype;
-
-                if (!shaderProto.raw) {
-                  continue;
-                }
-
-                var vertexShader = shaderProto.vertexShader;
-                var fragmentShader = shaderProto.fragmentShader;
-
-                var isGLSL3ShaderMaterial = false;
-
-                if (vertexShader.match(versionRegex) !== null && fragmentShader.match(versionRegex) !== null) {
-                  isGLSL3ShaderMaterial = true;
-
-                  vertexShader = vertexShader.replace(versionRegex, '');
-                  fragmentShader = fragmentShader.replace(versionRegex, '');
-                }
-
-                // Remove derivative #extension directives because it isn't necessary in WebGL2 + GLSL3
-                // and it can cause problem in Safari 15.
-                // See https://github.com/MozillaReality/aframe/pull/32
-
-                if (fragmentShader.indexOf('GL_OES_standard_derivatives') >= 0) {
-                  // Hardcoded chunk may not be flexible.
-                  // But we rarely update our A-Frame shader codes. I hope it is acceptable.
-                  const derivativesExtensionLines = [
-                    '#ifdef GL_OES_standard_derivatives',
-                    '#extension GL_OES_standard_derivatives: enable',
-                    '#endif'
-                  ].join('\n') + '\n';
-                  fragmentShader = fragmentShader.replace(derivativesExtensionLines, '');
-                }
-
-                // GLSL 3.0 conversion
-                const prefixVertex = [
-                  '#version 300 es\n',
-                  '#define attribute in',
-                  '#define varying out',
-                  '#define texture2D texture',
-                  enableMultiview ? '#define AFRAME_enable_multiview' : ''
-                ].join('\n') + '\n';
-
-                const prefixFragment = [
-                  '#version 300 es\n',
-                  '#define varying in',
-                  isGLSL3ShaderMaterial ? '' : 'out highp vec4 pc_fragColor;',
-                  isGLSL3ShaderMaterial ? '' : '#define gl_FragColor pc_fragColor',
-                  '#define gl_FragDepthEXT gl_FragDepth',
-                  '#define texture2D texture',
-                  '#define textureCube texture',
-                  '#define texture2DProj textureProj',
-                  '#define texture2DLodEXT textureLod',
-                  '#define texture2DProjLodEXT textureProjLod',
-                  '#define textureCubeLodEXT textureLod',
-                  '#define texture2DGradEXT textureGrad',
-                  '#define texture2DProjGradEXT textureProjGrad',
-                  '#define textureCubeGradEXT textureGrad'
-                ].join('\n') + '\n';
-
-                shaderProto.vertexShader = prefixVertex + vertexShader;
-                shaderProto.fragmentShader = prefixFragment + fragmentShader;
-              }
-            } else {
-              console.warn('No WebGL 2.0 context available. Falling back to WebGL 1.0');
-              if (enableMultiview) {
-                console.warn('Multiview enabled but requires a WebGL2 context');
-                enableMultiview = false;
-              }
-            }
-          }
-
           this.maxCanvasSize = {
             width: rendererAttr.maxCanvasWidth
               ? parseInt(rendererAttr.maxCanvasWidth)
@@ -739,7 +660,10 @@ module.exports.AScene = registerElement('a-scene', {
         renderer = this.renderer = new THREE.WebGLRenderer(rendererConfig);
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.sortObjects = false;
-        loadingScreen.setup(this, getCanvasSize);
+        if (this.camera) { renderer.xr.setPoseTarget(this.camera.el.object3D); }
+        this.addEventListener('camera-set-active', function () {
+          renderer.xr.setPoseTarget(self.camera.el.object3D);
+        });
       },
       writable: window.debug
     },
@@ -865,7 +789,6 @@ module.exports.AScene = registerElement('a-scene', {
         this.time = this.clock.elapsedTime * 1000;
 
         if (this.isPlaying) { this.tick(this.time, this.delta); }
-
         var savedBackground = null;
         if (this.is('ar-mode')) {
           // In AR mode, don't render the default background. Hide it, then
@@ -894,6 +817,7 @@ module.exports.AScene = registerElement('a-scene', {
  * @param {boolean} isVR - If in VR
  */
 function getCanvasSize (canvasEl, embedded, maxSize, isVR) {
+  if (!canvasEl.parentElement) { return {height: 0, width: 0}; }
   if (embedded) {
     return {
       height: canvasEl.parentElement.offsetHeight,

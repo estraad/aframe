@@ -5,7 +5,7 @@ var registerSystem = require('../core/system').registerSystem;
  * System for geometry component.
  * Handle geometry caching.
  *
- * @member {object} cache - Mapping of stringified component data to THREE.Geometry objects.
+ * @member {object} cache - Mapping of stringified component data to THREE.BufferGeometry objects.
  * @member {object} cacheCount - Keep track of number of entities using a geometry to
  *         know whether to dispose on removal.
  */

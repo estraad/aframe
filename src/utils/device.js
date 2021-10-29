@@ -8,9 +8,7 @@ var supportsARSession = false;
  * Oculus Browser 7 doesn't support the WebXR gamepads module.
  * We fallback to WebVR API and will hotfix when implementation is complete.
  */
-
-// HACK: We need force WebVR in Hubs with the window.forceWebVR flag for the time being, until Hubs implements WebXR support.
-var isWebXRAvailable = module.exports.isWebXRAvailable = window.forceWebVR !== true && !window.debug && navigator.xr;
+var isWebXRAvailable = module.exports.isWebXRAvailable = !window.debug && navigator.xr !== undefined;
 
 // Catch vrdisplayactivate early to ensure we can enter VR mode after the scene loads.
 window.addEventListener('vrdisplayactivate', function (evt) {
@@ -26,17 +24,6 @@ window.addEventListener('vrdisplayactivate', function (evt) {
   vrDisplay.requestPresent([{source: canvasEl}]).then(function () {}, function () {});
 });
 
-// It catches vrdisplayactivate early to ensure we can enter VR mode after the scene loads.
-window.addEventListener('vrdisplayactivate', function (evt) {
-  var canvasEl;
-  // WebXR takes priority if available.
-  if ('xr' in navigator) { return; }
-  canvasEl = document.createElement('canvas');
-  vrDisplay = evt.display;
-  // Request present immediately. a-scene will be allowed to enter VR without user gesture.
-  vrDisplay.requestPresent([{source: canvasEl}]).then(function () {}, function () {});
-});
-
 // Support both WebVR and WebXR APIs.
 if (isWebXRAvailable) {
   var updateEnterInterfaces = function () {
@@ -45,7 +32,7 @@ if (isWebXRAvailable) {
       window.addEventListener('DOMContentLoaded', updateEnterInterfaces);
       return;
     }
-    if (sceneEl.hasLoaded && sceneEl.components['vr-mode-ui']) {
+    if (sceneEl.hasLoaded) {
       sceneEl.components['vr-mode-ui'].updateEnterInterfaces();
     } else {
       sceneEl.addEventListener('loaded', updateEnterInterfaces);
@@ -199,3 +186,4 @@ module.exports.isBrowserEnvironment = !!(!process || process.browser);
  * Check if running in node on the server.
  */
 module.exports.isNodeEnvironment = !module.exports.isBrowserEnvironment;
+
