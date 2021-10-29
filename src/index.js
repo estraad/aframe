@@ -82,7 +82,7 @@ require('./core/a-mixin');
 require('./extras/components/');
 require('./extras/primitives/');
 
-console.log('A-Frame Version: Estraad Custom Fork)');
+console.log('A-Frame Version: Estraad Custom Fork');
 console.log('three Version: https://github.com/MozillaReality/three.js');
 console.log('WebVR Polyfill Version:', pkg.dependencies['webvr-polyfill']);
 

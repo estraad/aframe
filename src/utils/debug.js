@@ -87,5 +87,4 @@ if (ls && (parseInt(ls.logs, 10) || ls.logs === 'true')) {
   debug.enable('*:error,*:info,*:warn');
 }
 
-
 module.exports = debug;
