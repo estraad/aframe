@@ -262,7 +262,7 @@ module.exports.AScene = registerElement('a-scene', {
       value: function (useAR) {
         var self = this;
         var vrDisplay;
-        var vrManager = self.renderer.vr;
+        var vrManager = self.renderer.xr;
 
         // Don't enter VR if already in VR.
         if (this.is('vr-mode')) { return Promise.resolve('Already in VR.'); }
@@ -368,7 +368,7 @@ module.exports.AScene = registerElement('a-scene', {
       value: function () {
         var self = this;
         var vrDisplay;
-        var vrManager = this.renderer.vr;
+        var vrManager = this.renderer.xr;
 
         // Don't exit VR if not in VR.
         if (!this.is('vr-mode')) { return Promise.resolve('Not in VR.'); }
@@ -552,8 +552,8 @@ module.exports.AScene = registerElement('a-scene', {
           return;
         }
 
-        var isPresenting = this.renderer.vr.isPresenting();
-        isVRPresenting = this.renderer.vr.enabled && isPresenting;
+        var isPresenting = this.renderer.xr.isPresenting;
+        isVRPresenting = this.renderer.xr.enabled && isPresenting;
 
         // Do not update renderer, if a camera or a canvas have not been injected.
         // In VR mode, three handles canvas resize based on the dimensions returned by
@@ -624,16 +624,21 @@ module.exports.AScene = registerElement('a-scene', {
           }
 
           if (rendererAttr.webgl2 && rendererAttr.webgl2 === 'true') {
-            const context = this.canvas.getContext('webgl2', {
+            const contextConfig = {
               alpha: rendererConfig.alpha,
               depth: true,
               stencil: true,
               antialias: rendererConfig.antialias,
               premultipliedAlpha: true,
               preserveDrawingBuffer: false,
-              powerPreference: 'default',
-              xrCompatible: true
-            });
+              powerPreference: 'default'
+            };
+
+            if (navigator.xr) {
+              contextConfig.xrCompatible = true;
+            }
+
+            const context = this.canvas.getContext('webgl2', contextConfig);
 
             if (context) {
               console.log('Using WebGL 2.0 context.');
@@ -666,6 +671,21 @@ module.exports.AScene = registerElement('a-scene', {
 
                   vertexShader = vertexShader.replace(versionRegex, '');
                   fragmentShader = fragmentShader.replace(versionRegex, '');
+                }
+
+                // Remove derivative #extension directives because it isn't necessary in WebGL2 + GLSL3
+                // and it can cause problem in Safari 15.
+                // See https://github.com/MozillaReality/aframe/pull/32
+
+                if (fragmentShader.indexOf('GL_OES_standard_derivatives') >= 0) {
+                  // Hardcoded chunk may not be flexible.
+                  // But we rarely update our A-Frame shader codes. I hope it is acceptable.
+                  const derivativesExtensionLines = [
+                    '#ifdef GL_OES_standard_derivatives',
+                    '#extension GL_OES_standard_derivatives: enable',
+                    '#endif'
+                  ].join('\n') + '\n';
+                  fragmentShader = fragmentShader.replace(derivativesExtensionLines, '');
                 }
 
                 // GLSL 3.0 conversion
@@ -741,7 +761,7 @@ module.exports.AScene = registerElement('a-scene', {
         this.addEventListener('loaded', function () {
           var renderer = this.renderer;
           var vrDisplay;
-          var vrManager = this.renderer.vr;
+          var vrManager = this.renderer.xr;
           AEntity.prototype.play.call(this);  // .play() *before* render.
 
           if (sceneEl.renderStarted) { return; }
